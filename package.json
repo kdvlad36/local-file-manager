@@ -1,0 +1,14 @@
+{
+  "name": "file-transfer-manager",
+  "version": "1.0.0",
+  "description": "Файловый менеджер для передачи файлов в локальной сети",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "multer": "^1.4.5-lts.1",
+    "open": "^8.4.2"
+  }
+} 

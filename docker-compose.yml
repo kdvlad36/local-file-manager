@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  file-manager:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: file-manager
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    volumes:
+      - file-storage:/data/file_transfer
+    environment:
+      - NODE_ENV=production
+    networks:
+      - file-manager-network
+
+volumes:
+  file-storage:
+    driver: local
+
+networks:
+  file-manager-network:
+    driver: bridge 
