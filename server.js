@@ -3,8 +3,10 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+require('dotenv').config();
 const { networkInterfaces } = require('os');
 const openBrowser = require('open');
+const archiver = require('archiver');
 
 const app = express();
 const port = 3001;
@@ -61,19 +63,20 @@ function formatFileSize(size) {
 
 // Маршрут для главной страницы
 app.get('/', (req, res) => {
-    const files = fs.readdirSync(uploadFolder).map(file => {
-        const filePath = path.join(uploadFolder, file);
-        const stats = fs.statSync(filePath);
+    const filesAndDirs = fs.readdirSync(uploadFolder).map(item => {
+        const itemPath = path.join(uploadFolder, item);
+        const stats = fs.statSync(itemPath);
         return {
-            name: file,
+            name: item,
             size: formatFileSize(stats.size),
-            path: filePath
+            path: itemPath,
+            isDirectory: stats.isDirectory()
         };
     });
     
     const ipAddresses = getIpAddresses();
     
-    const html = generateHTML(files, ipAddresses);
+    const html = generateHTML(filesAndDirs, ipAddresses);
     res.send(html);
 });
 
@@ -83,19 +86,93 @@ app.post('/upload', upload.array('files'), (req, res) => {
 });
 
 // Маршрут для скачивания файлов
-app.get('/download/:filename', (req, res) => {
-    const filename = req.params.filename;
+app.get('/download/:filename(*)', (req, res) => {
+    // Декодируем имя файла для корректной обработки специальных символов
+    const filename = decodeURIComponent(req.params.filename);
     const filePath = path.join(uploadFolder, filename);
-    res.download(filePath);
+    
+    // Проверяем существование файла или директории
+    if (!fs.existsSync(filePath)) {
+        console.error(`Ресурс не найден: ${filePath}`);
+        return res.status(404).send('Ресурс не найден');
+    }
+    
+    const stats = fs.statSync(filePath);
+    
+    // Если это файл, скачиваем его напрямую
+    if (stats.isFile()) {
+        res.download(filePath, filename, (err) => {
+            if (err) {
+                console.error(`Ошибка при скачивании файла: ${err.message}`);
+                if (!res.headersSent) {
+                    return res.status(500).send('Ошибка при скачивании файла');
+                }
+            }
+        });
+    } 
+    // Если это папка, создаем и скачиваем ZIP-архив
+    else if (stats.isDirectory()) {
+        const zipFilename = `${path.basename(filePath)}.zip`;
+        const zipFilePath = path.join(os.tmpdir(), zipFilename);
+        const output = fs.createWriteStream(zipFilePath);
+        const archive = archiver('zip', {
+            zlib: { level: 9 } // Максимальная степень сжатия
+        });
+        
+        output.on('close', function() {
+            console.log(`Архив создан: ${zipFilePath} (${archive.pointer()} байт)`);
+            res.download(zipFilePath, zipFilename, (err) => {
+                if (err) {
+                    console.error(`Ошибка при скачивании архива: ${err.message}`);
+                    if (!res.headersSent) {
+                        return res.status(500).send('Ошибка при скачивании архива');
+                    }
+                }
+                // Удаляем временный файл после скачивания
+                setTimeout(() => {
+                    try {
+                        if (fs.existsSync(zipFilePath)) {
+                            fs.unlinkSync(zipFilePath);
+                            console.log(`Временный архив удален: ${zipFilePath}`);
+                        }
+                    } catch (e) {
+                        console.error(`Ошибка при удалении временного архива: ${e.message}`);
+                    }
+                }, 60000); // Ждем 1 минуту после скачивания, затем удаляем
+            });
+        });
+        
+        archive.on('error', function(err) {
+            console.error(`Ошибка при создании архива: ${err.message}`);
+            if (!res.headersSent) {
+                return res.status(500).send('Ошибка при создании архива');
+            }
+        });
+        
+        archive.pipe(output);
+        archive.directory(filePath, path.basename(filePath));
+        archive.finalize();
+    } 
+    // Для других типов ресурсов
+    else {
+        console.error(`Ошибка: ${filePath} не является ни файлом, ни директорией`);
+        return res.status(400).send('Запрашиваемый ресурс не поддерживается');
+    }
 });
 
 // Маршрут для удаления файлов
-app.get('/delete/:filename', (req, res) => {
-    const filename = req.params.filename;
+app.get('/delete/:filename(*)', (req, res) => {
+    const filename = decodeURIComponent(req.params.filename);
     const filePath = path.join(uploadFolder, filename);
     
+    // Проверяем существование и что это файл
     if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
+        const stats = fs.statSync(filePath);
+        if (stats.isFile()) {
+            fs.unlinkSync(filePath);
+        } else {
+            console.error(`Ошибка: Попытка удалить директорию ${filePath}`);
+        }
     }
     
     res.redirect('/');
@@ -311,7 +388,8 @@ function generateHTML(files, ipAddresses) {
         <table>
             <thead>
                 <tr>
-                    <th>Имя файла</th>
+                    <th>Тип</th>
+                    <th>Имя</th>
                     <th>Размер</th>
                     <th>Действия</th>
                 </tr>
@@ -319,10 +397,13 @@ function generateHTML(files, ipAddresses) {
             <tbody>
                 ${files.map(file => `
                 <tr>
-                    <td data-label="Имя файла">${file.name}</td>
+                    <td data-label="Тип">${file.isDirectory ? '📁' : '📄'}</td>
+                    <td data-label="Имя">${file.name}${file.isDirectory ? '/' : ''}</td>
                     <td data-label="Размер">${file.size}</td>
                     <td data-label="Действия">
-                        <a href="/download/${encodeURIComponent(file.name)}" class="btn btn-download">Скачать</a>
+                        <a href="/download/${encodeURIComponent(file.name)}" class="btn btn-download">
+                            ${file.isDirectory ? 'Скачать ZIP' : 'Скачать'}
+                        </a>
                         <a href="/delete/${encodeURIComponent(file.name)}" class="btn btn-delete" onclick="return confirm('Вы уверены?')">Удалить</a>
                     </td>
                 </tr>

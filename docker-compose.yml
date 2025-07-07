@@ -12,6 +12,7 @@ services:
     volumes:
       - file-storage:/data/file_transfer
     environment:
+      - FILE_TRANSFER_DIR=/data/file_transfer
       - NODE_ENV=production
     networks:
       - file-manager-network
